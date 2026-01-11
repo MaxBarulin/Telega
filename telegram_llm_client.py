@@ -112,8 +112,12 @@ async def main():
     # API Endpoint
     KOBOLD_API_URL = "http://localhost:5001/api/v1/generate"
     # Config
-    MAX_HISTORY = 10
-    SYSTEM_PROMPT = "You are a user chatting on Telegram. Reply casually."
+    MAX_HISTORY = 20
+    SYSTEM_PROMPT = (
+        "You are a user chatting on Telegram. Your goal is to keep the conversation going. "
+        "Reply naturally, be engaging, and ask follow-up questions if appropriate. "
+        "Do not be overly brief, but don't write essays either."
+    )
 
     import aiohttp
     from telethon import events
@@ -167,7 +171,7 @@ async def main():
                     "prompt": prompt,
                     "max_context_length": 1024,
                     "max_length": 1024,
-                    "temperature": 0.5,
+                    "temperature": 0.7,
                     "top_p": 0.9,
                     "stop_sequence": [f"{name}:", "Me:", "\n\n"]
                 }
@@ -182,7 +186,7 @@ async def main():
                         if auto_mode:
                             print("✅ Auto-sending...")
                             await client.send_message(target_entity, generated_text)
-                            context_buffer.append({"sender": "Me", "text": generated_text})
+                            # context_buffer update handled by event.out handler
                             print("Sent!")
                         else:
                             while True:
@@ -192,7 +196,7 @@ async def main():
                                 if action in ('s', 'send', ''): # Default to send
                                     print("Sending...")
                                     await client.send_message(target_entity, generated_text)
-                                    context_buffer.append({"sender": "Me", "text": generated_text})
+                                    # context_buffer update handled by event.out handler
                                     print("Sent!")
                                     break
                                 elif action in ('e', 'edit'):
