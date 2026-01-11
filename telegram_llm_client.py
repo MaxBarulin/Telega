@@ -99,12 +99,21 @@ async def main():
     name = getattr(target_entity, 'first_name', getattr(target_entity, 'title', 'Unknown'))
     print(f"\nSelected chat: {name} (ID: {target_entity.id})")
     
+    # Auto-mode selection
+    auto_input = input("Enable fully automatic mode? [y/N]: ").strip().lower()
+    auto_mode = auto_input == 'y'
+    if auto_mode:
+        print("⚠️  WARNING: Automatic mode enabled. Messages will be sent without confirmation.")
+    
     # Message loop
     print(f"\nListening for messages from {name}...")
     print("Press Ctrl+C to stop.")
 
     # API Endpoint
     KOBOLD_API_URL = "http://localhost:5001/api/v1/generate"
+    # Config
+    MAX_HISTORY = 10
+    SYSTEM_PROMPT = "You are a user chatting on Telegram. Reply casually."
 
     import aiohttp
     from telethon import events
@@ -113,35 +122,39 @@ async def main():
     # List of dicts: {"sender": str, "text": str}
     context_buffer = []
 
-    # Fetch last 5 messages to populate context
-    initial_msgs = await client.get_messages(target_entity, limit=5)
+    # Fetch last N messages to populate context
+    print(f"Fetching last {MAX_HISTORY} messages...")
+    initial_msgs = await client.get_messages(target_entity, limit=MAX_HISTORY)
     for msg in reversed(initial_msgs):
         if msg.text:
             sender = "Me" if msg.out else name
-            context_buffer.append({"sender": sender, "text": msg.text})
+            # Simple clean up of text
+            text = msg.text.replace("\n", " ")
+            context_buffer.append({"sender": sender, "text": text})
 
     @client.on(events.NewMessage(chats=target_entity))
     async def handler(event):
         if event.out:
             # Add our own messages to context but don't trigger AI
-            context_buffer.append({"sender": "Me", "text": event.message.text})
+            text = event.message.text.replace("\n", " ")
+            context_buffer.append({"sender": "Me", "text": text})
             # Keep buffer size reasonable
-            if len(context_buffer) > 20:
+            if len(context_buffer) > MAX_HISTORY:
                 context_buffer.pop(0)
             return
 
         sender_name = name
-        msg_text = event.message.text
+        msg_text = event.message.text.replace("\n", " ")
         
         print(f"\n\n--- New Message from {sender_name} ---")
         print(f"Content: {msg_text}")
         
         context_buffer.append({"sender": sender_name, "text": msg_text})
-        if len(context_buffer) > 20:
+        if len(context_buffer) > MAX_HISTORY:
             context_buffer.pop(0)
 
         # Generate Prompt
-        prompt = ""
+        prompt = f"{SYSTEM_PROMPT}\n\n"
         for item in context_buffer:
             prompt += f"{item['sender']}: {item['text']}\n"
         prompt += "Me:"
@@ -152,40 +165,44 @@ async def main():
             async with aiohttp.ClientSession() as session:
                 payload = {
                     "prompt": prompt,
-                    "max_context_length": 2048,
-                    "max_length": 150,
-                    "temperature": 0.7,
+                    "max_context_length": 1024,
+                    "max_length": 1024,
+                    "temperature": 0.5,
                     "top_p": 0.9,
                     "stop_sequence": [f"{name}:", "Me:", "\n\n"]
                 }
                 async with session.post(KOBOLD_API_URL, json=payload) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        # Handling standard KoboldCPP output format
-                        # Usually { "results": [ { "text": "..." } ] }
                         generated_text = data['results'][0]['text'].strip()
                         
                         print(f"\nSuggestion:\n{generated_text}")
                         print("-" * 20)
                         
-                        while True:
-                            action = await asyncio.get_running_loop().run_in_executor(None, input, "Action [ (S)end / (E)dit / (I)gnore ]: ")
-                            action = action.lower().strip()
-                            
-                            if action in ('s', 'send', ''): # Default to send
-                                print("Sending...")
-                                await client.send_message(target_entity, generated_text)
-                                context_buffer.append({"sender": "Me", "text": generated_text})
-                                print("Sent!")
-                                break
-                            elif action in ('e', 'edit'):
-                                new_text = await asyncio.get_running_loop().run_in_executor(None, input, "Enter new text: ")
-                                generated_text = new_text.strip()
-                                print(f"New text: {generated_text}")
-                                # Loop back to confirm
-                            elif action in ('i', 'ignore', 'skip'):
-                                print("Skipped.")
-                                break
+                        if auto_mode:
+                            print("✅ Auto-sending...")
+                            await client.send_message(target_entity, generated_text)
+                            context_buffer.append({"sender": "Me", "text": generated_text})
+                            print("Sent!")
+                        else:
+                            while True:
+                                action = await asyncio.get_running_loop().run_in_executor(None, input, "Action [ (S)end / (E)dit / (I)gnore ]: ")
+                                action = action.lower().strip()
+                                
+                                if action in ('s', 'send', ''): # Default to send
+                                    print("Sending...")
+                                    await client.send_message(target_entity, generated_text)
+                                    context_buffer.append({"sender": "Me", "text": generated_text})
+                                    print("Sent!")
+                                    break
+                                elif action in ('e', 'edit'):
+                                    new_text = await asyncio.get_running_loop().run_in_executor(None, input, "Enter new text: ")
+                                    generated_text = new_text.strip()
+                                    print(f"New text: {generated_text}")
+                                    # Loop back to confirm
+                                elif action in ('i', 'ignore', 'skip'):
+                                    print("Skipped.")
+                                    break
                     else:
                         print(f"Error from KoboldCPP: {resp.status}")
         except Exception as e:
